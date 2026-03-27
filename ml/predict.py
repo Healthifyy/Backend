@@ -3,6 +3,26 @@ import numpy as np
 import os
 import sys
 
+SYMPTOM_ALIASES = {
+    "body_ache": "muscle_pain",
+    "body ache": "muscle_pain",
+    "bodyache": "muscle_pain",
+    "sneezing": "continuous_sneezing",
+    "fever": "high_fever",
+    "stomach_ache": "stomach_pain",
+    "eye_redness": "redness_of_eyes",
+    "loose_motion": "diarrhoea",
+    "loose_stools": "diarrhoea",
+    "cold": "runny_nose",
+    "sore_throat": "throat_irritation",
+    "back ache": "back_pain",
+    "backache": "back_pain",
+}
+
+def normalize_symptom(s):
+    s = s.lower().strip().replace(" ", "_")
+    return SYMPTOM_ALIASES.get(s, s)
+
 # Global variables for model state
 _model = None
 _symptom_columns = None
@@ -12,18 +32,6 @@ _disease_encoder = None
 MODEL_PKL = "ml/healthify_model.pkl"
 COLUMNS_PKL = "ml/symptom_columns.pkl"
 ENCODER_PKL = "ml/disease_encoder.pkl"
-
-# EMERGENCY and URGENT symptom sets
-EMERGENCY_SYMPTOMS = {
-  "chest_pain", "breathlessness", "unconsciousness", "paralysis",
-  "altered_sensorium", "weakness_of_one_body_side", "slurred_speech",
-  "loss_of_balance", "blood_in_sputum"
-}
-
-URGENT_SYMPTOMS = {
-  "high_fever", "sudden_high_fever", "fast_heart_rate",
-  "neck_stiffness", "stiff_neck", "severe_headache"
-}
 
 # DISEASE to TEST mapping
 DISEASE_TESTS = {
@@ -41,7 +49,8 @@ DISEASE_TESTS = {
   "Common Cold": ["Clinical diagnosis only"],
   "Migraine": ["Clinical diagnosis", "CT Scan if first episode"],
   "Gastroenteritis": ["Stool Culture", "CBC", "Electrolytes"],
-  "Chicken pox": ["Clinical diagnosis", "Tzanck Smear if needed"]
+  "Chicken pox": ["Clinical diagnosis", "Tzanck Smear if needed"],
+  "Allergy": ["Allergy testing", "IgE levels"]
 }
 
 def load_model() -> bool:
@@ -68,124 +77,160 @@ def load_model() -> bool:
 def symptoms_to_vector(symptoms: list) -> np.ndarray:
     """Convert input symptoms into a binary feature vector."""
     vector = np.zeros(len(_symptom_columns))
+    
     for s in symptoms:
-        # Normalize: lowercase, strip, replace spaces with underscores
-        clean_s = s.lower().strip().replace(" ", "_")
+        clean_s = normalize_symptom(s)
+        
+        # 3. Exact match
         if clean_s in _symptom_columns:
             idx = _symptom_columns.index(clean_s)
             vector[idx] = 1
+            continue
+            
+        # 4. Partial / fuzzy match
+        for col_idx, col_name in enumerate(_symptom_columns):
+            if clean_s in col_name or col_name in clean_s:
+                vector[col_idx] = 1
+                break
+                
     return vector.reshape(1, -1)
 
-def classify_urgency(symptoms: list, existing_conditions: list, 
-                     is_pregnant: bool, severity: int) -> tuple[str, str]:
-    """Determine case urgency based on clinical rules."""
-    # Normalize input symptoms for checking
-    clean_symptoms = [s.lower().strip().replace(" ", "_") for s in symptoms]
+def classify_urgency(clean_symptoms: list, severity: int, is_pregnant: bool, recent_travel: bool) -> str:
+    """Determine case urgency based on clinical rules. OVERRIDES ML"""
+    # Emergency rules
+    emergency_keywords = {"chest_pain", "breathlessness", "unconsciousness", "paralysis", "slurred_speech", "severe_bleeding"}
+    has_emergency = any(k in clean_symptoms for k in emergency_keywords)
     
-    # 1. Emergency Symptoms check
-    for s in clean_symptoms:
-        if s in EMERGENCY_SYMPTOMS:
-            return ("emergency", f"Emergency symptom detected: {s.replace('_', ' ')}")
-            
-    # 2. Diabetic high-risk check
-    if "diabetes" in [c.lower() for c in existing_conditions]:
-        high_risk_s = {"chest_pain", "breathlessness", "high_fever"}
-        for s in clean_symptoms:
-            if s in high_risk_s:
-                return ("emergency", "Diabetic patient with high-risk symptoms")
-                
-    # 3. Pregnancy fever check
-    if is_pregnant and "high_fever" in clean_symptoms:
-        return ("emergency", "Pregnant patient with fever requires immediate attention")
+    if severity >= 7 or has_emergency or ("high_fever" in clean_symptoms and "breathlessness" in clean_symptoms):
+        return "EMERGENCY"
         
-    # 4. Urgent symptoms check
-    for s in clean_symptoms:
-        if s in URGENT_SYMPTOMS:
-            return ("urgent", f"Urgent symptom detected: {s.replace('_', ' ')}")
-            
-    # 5. High severity check
-    if severity >= 8:
-        return ("urgent", "High severity score reported")
+    # Urgent rules
+    urgent_keywords = {"high_fever", "vomiting", "dehydration", "jaundice"}
+    has_urgent = any(k in clean_symptoms for k in urgent_keywords)
+    has_any_fever = any("fever" in s for s in clean_symptoms)
+    
+    if severity >= 4 or has_urgent or (is_pregnant and has_any_fever) or recent_travel:
+        return "URGENT"
         
-    # 6. Default routine
-    return ("routine", "No emergency indicators detected")
+    # Routine rules
+    return "ROUTINE"
 
-def get_red_flags(symptoms: list, existing_conditions: list) -> list[str]:
+def get_red_flags(clean_s: list, existing_conditions: list) -> list[str]:
     """Check for dangerous symptom/condition combinations."""
-    clean_s = [s.lower().strip().replace(" ", "_") for s in symptoms]
     conds = [c.lower() for c in existing_conditions]
     flags = []
     
-    # Combination checks
     if "chest_pain" in clean_s and "breathlessness" in clean_s:
         flags.append("Chest pain with breathlessness — possible cardiac emergency")
     if "high_fever" in clean_s and "neck_stiffness" in clean_s:
         flags.append("High fever with neck stiffness — possible meningitis")
-    if "high_fever" in clean_s and "altered_sensorium" in clean_s:
-        flags.append("Fever with confusion — possible sepsis or meningitis")
     if "diabetes" in conds and "high_fever" in clean_s:
         flags.append("Diabetic patient with fever — elevated infection complication risk")
-    if "diabetes" in conds and "chest_pain" in clean_s:
-        flags.append("Diabetic patient with chest pain — silent cardiac event possible")
-        
-    # Single symptom checks
-    if "blood_in_sputum" in clean_s:
-        flags.append("Blood in sputum — requires immediate investigation")
-    if "unconsciousness" in clean_s:
-        flags.append("Loss of consciousness — call emergency services immediately")
         
     return flags
 
 def predict_disease(symptoms: list, existing_conditions: list = [], 
-                    is_pregnant: bool = False, severity: int = 5) -> dict:
+                    is_pregnant: bool = False, severity: int = 5,
+                    recent_travel: bool = False, age: int = 30, gender: str = "other") -> dict:
     """Main entry point for AI disease prediction and triage."""
-    # 1. Ensure model is loaded
     if _model is None:
         if not load_model():
             return {"error": "Model files missing or corrupt"}
             
-    # 2. Convert to vector
     vector = symptoms_to_vector(symptoms)
     
-    # 3. & 4. Run prediction and top 3
+    # Calculate matched symptoms for score and red flags
+    matched_symptoms = []
+    unmatched_symptoms = []
+    for s in symptoms:
+        clean_s = normalize_symptom(s)
+        if clean_s in _symptom_columns:
+            matched_symptoms.append(clean_s)
+        else:
+            found = False
+            for col_name in _symptom_columns:
+                if clean_s in col_name or col_name in clean_s:
+                    matched_symptoms.append(col_name)
+                    found = True
+                    break
+            if not found:
+                unmatched_symptoms.append(s)
+                
+    total_input = len(symptoms)
+    match_score = int((len(matched_symptoms) / total_input) * 100) if total_input > 0 else 0
+    
     probs = _model.predict_proba(vector)[0]
+    
+    # PRIORITY BOOST RULES
+    for i, disease in enumerate(_disease_encoder.classes_):
+        boost = 0.0
+        
+        has_chest_pain = "chest_pain" in matched_symptoms
+        has_breath = "breathlessness" in matched_symptoms
+        has_fever = "high_fever" in matched_symptoms
+        has_headache = "headache" in matched_symptoms
+        has_body_ache = "body_ache" in matched_symptoms or "muscle_pain" in matched_symptoms
+        has_runny = "runny_nose" in matched_symptoms
+        has_sneezing = "sneezing" in matched_symptoms or "continuous_sneezing" in matched_symptoms
+        has_yellow = "yellowish_skin" in matched_symptoms
+        has_dark_urine = "dark_urine" in matched_symptoms
+        has_vomiting = "vomiting" in matched_symptoms
+        has_diarrhoea = "diarrhoea" in matched_symptoms
+        has_dehydration = "dehydration" in matched_symptoms
+        
+        if has_chest_pain and has_breath:
+            if disease == "Heart attack": boost += 0.3
+        if has_fever and has_headache and has_body_ache:
+            if disease == "Malaria": boost += 0.4
+            elif disease == "Dengue": boost += 0.35
+            elif disease == "Typhoid": boost += 0.3
+        if has_runny and has_sneezing:
+            if disease in ["Common Cold", "Allergy"]: boost += 0.3
+        if has_yellow and has_dark_urine:
+            if "hepatitis" in disease.lower() or disease == "Jaundice": boost += 0.3
+        if has_vomiting and has_diarrhoea and has_dehydration:
+            if disease in ["Cholera", "Gastroenteritis"]: boost += 0.3
+            
+        if is_pregnant and has_fever:
+            if disease == "Malaria": boost += 0.2
+            
+        probs[i] = min(probs[i] + boost, 0.99)
+    
     top_indices = np.argsort(probs)[::-1][:3]
     
-    # 5, 6, 7. Process top diseases
     top_conditions = []
     for idx in top_indices:
         disease_name = _disease_encoder.classes_[idx]
-        score = int(probs[idx] * 100)
+        prob = probs[idx]
         
-        # Confidence logic
-        if score >= 60: confidence = "high"
-        elif score >= 35: confidence = "medium"
-        else: confidence = "low"
+        if prob >= 0.50: 
+            confidence = "High"
+        elif prob >= 0.25: 
+            confidence = "Medium"
+        else: 
+            if match_score >= 80:
+                confidence = "Medium"
+            else:
+                confidence = "Low"
         
         top_conditions.append({
             "name": disease_name,
             "confidence": confidence,
-            "match_score": score,
-            "reasoning": "Matched based on symptom pattern analysis"
+            "match_score": match_score,
+            "reasoning": f"Probability: {prob:.2f}"
         })
         
-    # 8. Triage
-    urgency, urgency_reason = classify_urgency(symptoms, existing_conditions, is_pregnant, severity)
+    # Urgency Override
+    urgency = classify_urgency(matched_symptoms, severity, is_pregnant, recent_travel)
+    urgency_reason = "Determined by clinical rule engine"
     
-    # 9. Red flags
-    red_flags = get_red_flags(symptoms, existing_conditions)
-    
-    # 10. Recommended tests
+    red_flags = get_red_flags(matched_symptoms, existing_conditions)
     top_condition_name = top_conditions[0]["name"]
     recommended_tests = DISEASE_TESTS.get(top_condition_name, ["Consult a doctor for specific tests"])
     
-    # Formatting doctor summary
-    symptom_str = ", ".join(symptoms)
-    doctor_summary = (f"Patient presents with {symptom_str}. "
+    doctor_summary = (f"Patient presents with {', '.join(symptoms)}. "
                       f"AI triage identifies {top_condition_name} as most probable. "
-                      f"Urgency level: {urgency}. "
-                      f"This summary was generated by Healthify AI and is "
-                      f"not a replacement for clinical diagnosis.")
+                      f"Urgency level: {urgency}.")
     
     return {
         "urgency": urgency,
@@ -193,12 +238,8 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
         "top_conditions": top_conditions,
         "red_flags": red_flags,
         "recommended_tests": recommended_tests,
-        "home_care": ["Rest and stay hydrated", "Monitor symptoms closely", "Avoid self-medication"],
-        "when_to_escalate": [
-            "If symptoms worsen significantly", 
-            "If new symptoms appear",
-            "If fever crosses 103°F / 39.4°C"
-        ],
+        "home_care": ["Rest and stay hydrated"],
+        "when_to_escalate": ["If symptoms worsen significantly", "If new symptoms appear"],
         "doctor_summary": doctor_summary,
         "source": "ml_only"
     }
