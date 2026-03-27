@@ -2,7 +2,7 @@ services:
   - type: web
     name: healthify-api
     env: python
-    buildCommand: "pip install -r requirements.txt && python ml/train_model.py"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt && python ml/train_model.py"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: GEMINI_KEY_1
