@@ -11,7 +11,9 @@ from ml.knowledge_engine import (
     filter_age_inappropriate_diseases,
     build_reasoning,
     get_age_group,
-    get_duration_category
+    get_duration_category,
+    has_minimum_symptom_match,
+    DISEASE_COMMONALITY_RANK
 )
 
 SYMPTOM_LIST = []
@@ -251,13 +253,20 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     # Step 2: FILTER AGE-INAPPROPRIATE DISEASES
     top_conditions = filter_age_inappropriate_diseases(raw_ml_conditions, age)
     
+    # Filter diseases with no symptom match
+    top_conditions = [
+        c for c in top_conditions
+        if has_minimum_symptom_match(c["name"], symptoms)
+    ]
+
     # If all filtered out, fallback to top ML prediction
     if not top_conditions:
-        top_conditions = [raw_ml_conditions[0]]
+        top_conditions = raw_ml_conditions[:1]
 
     # Step 3: ENHANCED CONFIDENCE + REASONING (Knowledge Engine)
     enhanced_conditions = []
-    for condition in top_conditions[:3]:
+    # Narrow down to top candidates for enhancement
+    for condition in top_conditions[:10]:
         disease_name = condition["name"]
         ml_prob = condition["raw_probability"]
         
@@ -292,10 +301,12 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
             }
         })
 
-    # Step 4: SORT BY CONFIDENCE (Raw score first, then label)
+    # Step 4: SORT BY CONFIDENCE + COMMONALITY
     enhanced_conditions.sort(
-        key=lambda x: ({"High": 3, "Medium": 2, "Low": 1}.get(x["confidence"], 0), x["conf_score"]),
-        reverse=True
+        key=lambda x: (
+            -{"High": 3, "Medium": 2, "Low": 1}.get(x["confidence"], 0),
+            DISEASE_COMMONALITY_RANK.get(x["name"], 99)
+        )
     )
 
     # Step 5: GET URGENCY (Knowledge Engine)
@@ -330,7 +341,7 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     return {
         "urgency": urgency,
         "urgency_reason": urgency_reason,
-        "top_conditions": enhanced_conditions,
+        "top_conditions": enhanced_conditions[:3],
         "red_flags": red_flags,
         "recommended_tests": recommended_tests,
         "home_care": home_care,

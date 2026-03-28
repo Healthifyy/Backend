@@ -365,8 +365,8 @@
       "red_flags": ["weight_loss", "sweating", "cough"]
     },
     "Common Cold": {
-      "primary_symptoms": ["continuous_sneezing", "chills", "fatigue", "cough"],
-      "secondary_symptoms": ["headache", "runny_nose", "mild_fever", "throat_irritation"],
+      "primary_symptoms": ["continuous_sneezing", "chills", "fatigue", "cough", "throat_irritation"],
+      "secondary_symptoms": ["headache", "runny_nose", "mild_fever"],
       "age_groups": ["child", "adult", "elderly"],
       "typical_duration_days": [3, 10],
       "min_duration_days": 1,

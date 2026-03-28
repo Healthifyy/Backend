@@ -6,6 +6,52 @@ _knowledge_path = os.path.join(os.path.dirname(__file__), 'medical_knowledge.jso
 with open(_knowledge_path, 'r') as f:
     MEDICAL_KNOWLEDGE = json.load(f)['diseases']
 
+# Diseases ranked by how common they are in general population
+# Common diseases should win over rare ones when confidence is similar
+DISEASE_COMMONALITY_RANK = {
+    "Common Cold": 1,
+    "Allergy": 2,
+    "Gastroenteritis": 3,
+    "Urinary tract infection": 4,
+    "Fungal infection": 5,
+    "Acne": 6,
+    "Migraine": 7,
+    "Hypertension": 8,
+    "Diabetes": 9,
+    "Bronchial Asthma": 10,
+    "Malaria": 11,
+    "Typhoid": 12,
+    "Dengue": 13,
+    "Chicken pox": 14,
+    "Pneumonia": 15,
+    "Tuberculosis": 16,
+    "Jaundice": 17,
+    "GERD": 18,
+    "Peptic ulcer diseae": 19,
+    "Arthritis": 20,
+    "Osteoarthritis": 21,
+    "Hypothyroidism": 22,
+    "Hyperthyroidism": 23,
+    "Cervical spondylosis": 24,
+    "Dimorphic hemmorhoids(piles)": 25,
+    "Varicose veins": 26,
+    "Psoriasis": 27,
+    "Impetigo": 28,
+    "Hypoglycemia": 29,
+    "Drug Reaction": 30,
+    "Paroymsal Positional Vertigo": 31,
+    "Chronic cholestasis": 32,
+    "Alcoholic hepatitis": 33,
+    "Heart attack": 34,
+    "Paralysis (brain hemorrhage)": 35,
+    "Hepatitis A": 36,
+    "Hepatitis B": 37,
+    "Hepatitis C": 38,
+    "Hepatitis D": 39,
+    "Hepatitis E": 40,
+    "AIDS": 41
+}
+
 def get_age_group(age: int) -> str:
     if age < 18:
         return "child"
@@ -246,3 +292,21 @@ def build_reasoning(
     parts.append(f"{label} confidence")
 
     return " — ".join(parts) if parts else "Matched based on symptom pattern"
+
+def has_minimum_symptom_match(disease_name: str, input_symptoms: list) -> bool:
+    """
+    Disease must have at least 1 PRIMARY symptom match
+    OR at least 2 secondary symptom matches to be included.
+    Prevents rare diseases appearing with zero symptom match.
+    """
+    if disease_name not in MEDICAL_KNOWLEDGE:
+        return True  # unknown disease, allow it
+    
+    knowledge = MEDICAL_KNOWLEDGE[disease_name]
+    primary = knowledge["primary_symptoms"]
+    secondary = knowledge["secondary_symptoms"]
+    
+    primary_matches = [s for s in input_symptoms if s in primary]
+    secondary_matches = [s for s in input_symptoms if s in secondary]
+    
+    return len(primary_matches) >= 1 or len(secondary_matches) >= 2
