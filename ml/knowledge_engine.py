@@ -82,7 +82,11 @@ def calculate_confidence(
     - Age appropriateness
     - Duration appropriateness
     """
-    if disease_name not in MEDICAL_KNOWLEDGE:
+    # Case-insensitive lookup
+    name_lower = disease_name.lower()
+    knowledge_lookup = {k.lower(): v for k, v in MEDICAL_KNOWLEDGE.items()}
+    
+    if name_lower not in knowledge_lookup:
         # Unknown disease — use ML probability only
         conf_score = ml_probability
         label = _score_to_label(conf_score)
@@ -94,7 +98,7 @@ def calculate_confidence(
             "duration_appropriate": True
         }
 
-    knowledge = MEDICAL_KNOWLEDGE[disease_name]
+    knowledge = knowledge_lookup[name_lower]
     age_group = get_age_group(age)
     duration_cat = get_duration_category(duration_days)
 
@@ -106,10 +110,11 @@ def calculate_confidence(
     primary_matches = [s for s in input_symptoms if s in primary]
     secondary_matches = [s for s in input_symptoms if s in secondary]
 
+    # Use 5x weight for primary symptom matches to override generic noise
     if len(all_known) > 0:
         match_ratio = (
-            len(primary_matches) * 2 + len(secondary_matches)
-        ) / (len(primary) * 2 + len(secondary))
+            len(primary_matches) * 5 + len(secondary_matches)
+        ) / (len(primary) * 5 + len(secondary))
     else:
         match_ratio = 0.5
 
@@ -133,11 +138,11 @@ def calculate_confidence(
     # 4. Final score combining all factors
     boost = knowledge.get("confidence_boost", 0.2)
     conf_score = (
-        ml_probability * 0.15 +
-        match_ratio * 0.50 +
-        boost * 0.15 +
-        (age_weight - 1.0) * 0.10 +
-        (duration_weight - 1.0) * 0.10
+        ml_probability * 0.10 +   # Reduced from 0.15
+        match_ratio * 0.70 +      # Increased from 0.50
+        boost * 0.10 +            # Reduced from 0.15
+        (age_weight - 1.0) * 0.05 + # Reduced from 0.10
+        (duration_weight - 1.0) * 0.05 # Reduced from 0.10
     )
     conf_score = min(0.98, max(0.05, conf_score))
 
@@ -158,9 +163,9 @@ def calculate_confidence(
     }
 
 def _score_to_label(score: float) -> str:
-    if score >= 0.70:
+    if score >= 0.65: # Lowered from 0.70
         return "High"
-    elif score >= 0.45:
+    elif score >= 0.35: # Lowered from 0.45
         return "Medium"
     else:
         return "Low"
@@ -191,9 +196,14 @@ def get_urgency(
     ):
         return "EMERGENCY", f"Critical symptoms detected: {', '.join(emergency_matches)}"
 
-    if disease_name in MEDICAL_KNOWLEDGE:
-        base_urgency = MEDICAL_KNOWLEDGE[disease_name]["urgency_base"]
-        red_flags = MEDICAL_KNOWLEDGE[disease_name]["red_flags"]
+    # Case-insensitive lookup
+    name_lower = disease_name.lower()
+    knowledge_lookup = {k.lower(): v for k, v in MEDICAL_KNOWLEDGE.items()}
+    
+    if name_lower in knowledge_lookup:
+        knowledge = knowledge_lookup[name_lower]
+        base_urgency = knowledge["urgency_base"]
+        red_flags = knowledge["red_flags"]
         red_flag_matches = [s for s in input_symptoms if s in red_flags]
     else:
         base_urgency = "MODERATE"
@@ -250,17 +260,19 @@ def filter_age_inappropriate_diseases(
     age: int
 ) -> list:
     """Remove diseases that are age-inappropriate"""
+    # Create normalized lookup for case-insensitivity
+    knowledge_lookup = {k.lower(): v for k, v in MEDICAL_KNOWLEDGE.items()}
+    
     filtered = []
     for condition in conditions:
         name = condition.get("name", "")
-        if name in MEDICAL_KNOWLEDGE:
-            min_age = MEDICAL_KNOWLEDGE[name].get("exclude_if_age_below", 0)
-            max_age = MEDICAL_KNOWLEDGE[name].get("exclude_if_age_above", 100)
+        name_lower = name.lower()
+        if name_lower in knowledge_lookup:
+            metadata = knowledge_lookup[name_lower]
+            min_age = metadata.get("exclude_if_age_below", 0)
+            max_age = metadata.get("exclude_if_age_above", 100)
             if min_age <= age <= max_age:
                 filtered.append(condition)
-            else:
-                # Skip this disease — age inappropriate
-                continue
         else:
             filtered.append(condition)
     return filtered
@@ -299,10 +311,14 @@ def has_minimum_symptom_match(disease_name: str, input_symptoms: list) -> bool:
     OR at least 2 secondary symptom matches to be included.
     Prevents rare diseases appearing with zero symptom match.
     """
-    if disease_name not in MEDICAL_KNOWLEDGE:
+    # Case-insensitive lookup
+    name_lower = disease_name.lower()
+    knowledge_lookup = {k.lower(): v for k, v in MEDICAL_KNOWLEDGE.items()}
+    
+    if name_lower not in knowledge_lookup:
         return True  # unknown disease, allow it
     
-    knowledge = MEDICAL_KNOWLEDGE[disease_name]
+    knowledge = knowledge_lookup[name_lower]
     primary = knowledge["primary_symptoms"]
     secondary = knowledge["secondary_symptoms"]
     

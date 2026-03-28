@@ -212,7 +212,7 @@
     },
     "Malaria": {
       "primary_symptoms": ["chills", "vomiting", "high_fever", "sweating"],
-      "secondary_symptoms": ["headache", "nausea", "muscle_pain", "diarrhoea"],
+      "secondary_symptoms": ["headache", "nausea", "muscle_pain", "diarrhoea", "mild_fever"],
       "age_groups": ["child", "adult", "elderly"],
       "typical_duration_days": [2, 14],
       "min_duration_days": 2,

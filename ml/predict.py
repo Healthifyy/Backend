@@ -3,6 +3,7 @@ import numpy as np
 import json
 import os
 import sys
+import pandas as pd
 
 from ml.medicine_data import get_medicine_info
 from ml.knowledge_engine import (
@@ -233,10 +234,12 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     total_input = len(symptoms)
     match_score = int((len(matched_symptoms) / total_input) * 100) if total_input > 0 else 0
     
-    probs = _model.predict_proba(vector)[0]
+    # Convert to DataFrame to avoid feature name warnings
+    vec_df = pd.DataFrame(vector, columns=_symptom_columns)
+    probs = _model.predict_proba(vec_df)[0]
 
     # Step 1: PRE-PROCESS ML RESULTS
-    top_indices = np.argsort(probs)[::-1][:15] # Get more candidates for filtering
+    top_indices = np.argsort(probs)[::-1][:30] # Get more candidates for filtering
     
     raw_ml_conditions = []
     for idx in top_indices:
@@ -256,10 +259,9 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     # Filter diseases with no symptom match
     top_conditions = [
         c for c in top_conditions
-        if has_minimum_symptom_match(c["name"], symptoms)
+        if has_minimum_symptom_match(c["name"], matched_symptoms)
     ]
 
-    # If all filtered out, fallback to top ML prediction
     if not top_conditions:
         top_conditions = raw_ml_conditions[:1]
 

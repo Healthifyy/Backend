@@ -1,118 +1,131 @@
-import os
-import sys
-import json
-import pickle
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+import pickle
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import classification_report, accuracy_score
 
-# Paths relative to project root
-DATASET_PATH = "ml/datasets/dataset.csv"
-SEVERITY_CSV_PATH = "ml/datasets/symptom_severity.csv"
-MODEL_PKL = "ml/healthify_model.pkl"
-ENCODER_PKL = "ml/disease_encoder.pkl"
-COLUMNS_PKL = "ml/symptom_columns.pkl"
-SEVERITY_JSON = "ml/symptom_severity.json"
+# ── Load dataset ──────────────────────────────────────
+df = pd.read_csv('ml/datasets/dataset.csv')
+df.columns = df.columns.str.strip()
 
-def main():
-    print("--- 1. LOADING DATA ---")
-    try:
-        df = pd.read_csv(DATASET_PATH)
-    except Exception as e:
-        print(f"Error loading dataset: {e}")
-        sys.exit(1)
-    
-    # Strip whitespace from column names and Disease values
-    df.columns = df.columns.str.strip()
-    df['Disease'] = df['Disease'].str.strip()
-    
-    print(f"Dataset loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+# ── Convert WIDE → BINARY MATRIX ─────────────────────
+symptom_cols = [c for c in df.columns if c.startswith('Symptom')]
 
-    print("\n--- 2. PREPARING DATA ---")
-    X = df.drop('Disease', axis=1)
-    y = df['Disease']
-    
-    # Fill NaN symptoms with 0 or something similar if columns are sparse
-    # The dataset usually has Symptom_1, Symptom_2... until Symptom_17.
-    # We need to pivot or handle the categorical symptoms.
-    # NOTE: The provided Kaggle dataset format usually requires pivoting or encoding.
-    # However, the user request says 'X = all columns except Disease'.
-    # If the CSV is in the format Disease, Symptom_1, Symptom_2... we might need to 
-    # transform it to a binary matrix where each column is one unique symptom.
-    
-    # Let's get unique symptoms
-    all_symptoms = []
-    for col in X.columns:
-        all_symptoms.extend(df[col].dropna().unique())
-    
-    unique_symptoms = sorted(list(set([s.strip().lower() for s in all_symptoms if isinstance(s, str)])))
-    
-    # Create the training matrix
-    X_processed = pd.DataFrame(0, index=np.arange(len(df)), columns=unique_symptoms)
-    
-    for i in range(len(df)):
-        row_symptoms = df.iloc[i].drop('Disease').dropna().values
-        for s in row_symptoms:
-            s_clean = s.strip().lower().replace(" ", "_") # Match severity formatting
-            if s_clean in X_processed.columns:
-                X_processed.at[i, s_clean] = 1
-            # Fallback for original string
-            elif s.strip().lower() in X_processed.columns:
-                X_processed.at[i, s.strip().lower()] = 1
+all_symptoms = set()
+for col in symptom_cols:
+    vals = df[col].dropna().str.strip().str.lower().str.replace(' ', '_')
+    all_symptoms.update(vals.unique())
+all_symptoms.discard('nan')
+all_symptoms.discard('')
+all_symptoms = sorted(list(all_symptoms))
 
-    # Update symptom columns list to the processed ones
-    symptom_columns = list(X_processed.columns)
-    
-    # LabelEncoder for y
-    le = LabelEncoder()
-    y_encoded = le.fit_transform(y)
-    
-    # Save artifacts
-    with open(ENCODER_PKL, 'wb') as f:
-        pickle.dump(le, f)
-    with open(COLUMNS_PKL, 'wb') as f:
-        pickle.dump(symptom_columns, f)
-        
-    print(f"Diseases: {len(le.classes_)} | Symptoms: {len(symptom_columns)}")
+print(f"Unique symptoms found: {len(all_symptoms)}")
 
-    print("\n--- 3. TRAINING MODEL ---")
-    X_train, X_test, y_train, y_test = train_test_split(X_processed, y_encoded, test_size=0.2, random_state=42)
-    
-    model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-    model.fit(X_train, y_train)
-    
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    print(f"Model Accuracy: {accuracy:.4f}")
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred))
+# Build binary matrix
+binary_rows = []
+for _, row in df.iterrows():
+    vec = {s: 0 for s in all_symptoms}
+    for col in symptom_cols:
+        val = row[col]
+        if pd.notna(val):
+            cleaned = str(val).strip().lower().replace(' ', '_')
+            if cleaned in vec:
+                vec[cleaned] = 1
+    vec['Disease'] = str(row['Disease']).strip()
+    binary_rows.append(vec)
 
-    print("\n--- 4. SAVING MODEL ---")
-    with open(MODEL_PKL, 'wb') as f:
-        pickle.dump(model, f)
-    print(f"Model saved to {MODEL_PKL}")
+binary_df = pd.DataFrame(binary_rows)
+print(f"Binary matrix shape: {binary_df.shape}")
 
-    print("\n--- 5. SYMPTOM SEVERITY ---")
-    try:
-        sev_df = pd.read_csv(SEVERITY_CSV_PATH)
-        # Strip whitespace, replace spaces with underscores, lowercase
-        sev_df['Symptom'] = sev_df['Symptom'].str.strip().str.lower().str.replace(" ", "_")
-        severity_dict = dict(zip(sev_df['Symptom'], sev_df['weight']))
-        
-        with open(SEVERITY_JSON, 'w') as f:
-            json.dump(severity_dict, f, indent=4)
-        print("Symptom severity data saved")
-    except Exception as e:
-        print(f"Error processing severity: {e}")
+# ── Prepare X, y ──────────────────────────────────────
+X = binary_df.drop('Disease', axis=1)
+y = binary_df['Disease']
 
-    print("\n--- 6. FINAL SUMMARY ---")
-    print(f"Final Model Accuracy: {accuracy:.4f}")
-    print(f"Number of diseases: {len(le.classes_)}")
-    print(f"Number of symptom features: {len(symptom_columns)}")
-    print(f"Pickle files created: {MODEL_PKL}, {ENCODER_PKL}, {COLUMNS_PKL}")
+encoder = LabelEncoder()
+y_encoded = encoder.fit_transform(y)
 
-if __name__ == "__main__":
-    main()
+print(f"Diseases: {len(encoder.classes_)}")
+print(f"Symptom features: {X.shape[1]}")
+
+# ── Stratified train/test split ───────────────────────
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y_encoded,
+    test_size=0.2,
+    random_state=42,
+    stratify=y_encoded
+)
+
+# ── Train Random Forest (depth-limited) ──────────────
+print("\nTraining Random Forest (max_depth=15)...")
+rf = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=15,
+    min_samples_split=5,
+    min_samples_leaf=2,
+    max_features='sqrt',
+    class_weight='balanced',
+    random_state=42,
+    n_jobs=-1
+)
+rf.fit(X_train, y_train)
+rf_acc = accuracy_score(y_test, rf.predict(X_test))
+print(f"RF Test Accuracy: {rf_acc:.4f}")
+
+# ── Train Gradient Boosting ───────────────────────────
+print("\nTraining Gradient Boosting (max_depth=8)...")
+gb = GradientBoostingClassifier(
+    n_estimators=150,
+    max_depth=8,
+    learning_rate=0.1,
+    min_samples_split=5,
+    min_samples_leaf=2,
+    random_state=42
+)
+gb.fit(X_train, y_train)
+gb_acc = accuracy_score(y_test, gb.predict(X_test))
+print(f"GB Test Accuracy: {gb_acc:.4f}")
+
+# ── Pick best model ───────────────────────────────────
+if gb_acc >= rf_acc:
+    best_model = gb
+    model_type = "GradientBoosting"
+    best_acc = gb_acc
+else:
+    best_model = rf
+    model_type = "RandomForest"
+    best_acc = rf_acc
+
+print(f"\nBest model: {model_type} — Accuracy: {best_acc:.4f}")
+
+# ── Classification report ─────────────────────────────
+y_pred = best_model.predict(X_test)
+print("\nClassification Report:")
+print(classification_report(
+    y_test, y_pred,
+    target_names=encoder.classes_,
+    zero_division=0
+))
+
+# ── 5-fold cross validation ───────────────────────────
+print("\nRunning 5-fold cross validation (takes ~1 min)...")
+cv = cross_val_score(best_model, X, y_encoded, cv=5, n_jobs=-1)
+print(f"CV Accuracy: {cv.mean():.4f} (+/- {cv.std()*2:.4f})")
+
+# ── Save artifacts ────────────────────────────────────
+symptom_columns = list(X.columns)
+
+with open('ml/healthify_model.pkl', 'wb') as f:
+    pickle.dump(best_model, f)
+
+with open('ml/symptom_columns.pkl', 'wb') as f:
+    pickle.dump(symptom_columns, f)
+
+with open('ml/disease_encoder.pkl', 'wb') as f:
+    pickle.dump(encoder, f)
+
+print(f"\n[OK] Saved: {model_type}")
+print(f"[OK] Symptoms: {len(symptom_columns)}")
+print(f"[OK] Diseases: {len(encoder.classes_)}")
+print("\nDone. Model ready.")
