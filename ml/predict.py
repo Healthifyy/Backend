@@ -4,6 +4,8 @@ import json
 import os
 import sys
 
+from ml.medicine_data import get_medicine_info
+
 SYMPTOM_ALIASES = {
     "body_ache": "muscle_pain",
     "body ache": "muscle_pain",
@@ -279,7 +281,11 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
             "name": disease_name,
             "confidence": confidence,
             "match_score": match_score,
-            "reasoning": f"Probability: {norm_prob:.2f}"
+            "reasoning": f"Probability: {norm_prob:.2f}",
+            "medicine_info": {
+                **get_medicine_info(disease_name),
+                "disclaimer": "⚠️ FOR AWARENESS ONLY — Do NOT self-medicate. Always consult a qualified doctor or pharmacist before taking any medicine."
+            }
         })
         
     # Urgency Override

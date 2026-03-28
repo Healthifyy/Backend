@@ -35,6 +35,13 @@ class TriageRequest(BaseModel):
         }
 
 
+class MedicineInfo(BaseModel):
+    otc_medicines: list[str] = []
+    prescription_medicines: list[str] = []
+    avoid: list[str] = []
+    category: str = "general"
+    disclaimer: str = "For awareness only. Do NOT self-medicate. Always consult a qualified doctor."
+
 class ConditionResult(BaseModel):
     """A single predicted condition with confidence and reasoning."""
 
@@ -42,6 +49,7 @@ class ConditionResult(BaseModel):
     confidence: str  # "high" | "medium" | "low"
     match_score: int
     reasoning: str
+    medicine_info: Optional[MedicineInfo] = None
 
 
 class TriageResponse(BaseModel):
