@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from models.schemas import TriageRequest, TriageResponse
-from ml.predict import predict_disease, load_model
+from models.schemas import TriageRequest, TriageResponse, ImageSymptomRequest, ImageSymptomResponse
+from ml.predict import predict_disease, load_model, validate_symptoms
 from ml.gemini_enhancer import enhance_with_gemini
 from datetime import datetime
 import logging
@@ -74,3 +74,16 @@ async def triage_patient(request: TriageRequest):
             "doctor_summary": "Unable to complete analysis. Please consult a healthcare provider.",
             "source": "error_fallback"
         }
+
+@router.post("/validate-image-symptoms", response_model=ImageSymptomResponse)
+async def validate_image_symptoms(request: ImageSymptomRequest):
+    """
+    Validate symptoms detected from an image against the model's known symptom list.
+    """
+    try:
+        valid = validate_symptoms(request.detected_symptoms)
+        return {"valid_symptoms": valid}
+    except Exception as e:
+        logger.error(f"Symptom validation failed: {e}")
+        # Fallback to returning original symptoms if validation fails
+        return {"valid_symptoms": request.detected_symptoms}

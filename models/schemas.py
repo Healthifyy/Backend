@@ -64,3 +64,10 @@ class TriageResponse(BaseModel):
     when_to_escalate: List[str]
     doctor_summary: str
     source: str = "ml_only"  # "ml+gemini" | "ml_only"
+
+class ImageSymptomRequest(BaseModel):
+    detected_symptoms: List[str]
+    confidence: float
+
+class ImageSymptomResponse(BaseModel):
+    valid_symptoms: List[str]

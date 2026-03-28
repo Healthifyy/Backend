@@ -101,6 +101,25 @@ def symptoms_to_vector(symptoms: list) -> np.ndarray:
             if clean_s in col_name or col_name in clean_s:
                 vector[col_idx] = 1
                 break
+
+def validate_symptoms(symptoms: list) -> list:
+    """Filter symptoms against the model's known symptom list."""
+    if _symptom_columns is None:
+        load_model()
+        
+    valid = []
+    for s in symptoms:
+        clean_s = normalize_symptom(s)
+        if clean_s in _symptom_columns:
+            valid.append(clean_s)
+            continue
+            
+        # Also check for partial matches in the known columns
+        for col_name in _symptom_columns:
+            if clean_s in col_name or col_name in clean_s:
+                valid.append(col_name)
+                break
+    return list(set(valid)) # Return unique matches
                 
     return vector.reshape(1, -1)
 
