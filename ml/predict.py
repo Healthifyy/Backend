@@ -277,14 +277,28 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
             else:
                 confidence = "Low"
         
+        # Generate reasoning based on symptoms
+        reasoning_text = f"Suspected due to: {', '.join(matched_for_this_disease if _disease_symptoms and disease_name in _disease_symptoms else matched_symptoms)}"
+        
+        # Get medicine info and filter strictly
+        medicine_info = get_medicine_info(disease_name).copy()
+        
+        # Safety filter for specific high-risk drugs
+        restricted_drugs = ["Heparin IV", "Clopidogrel", "Nitroglycerin"]
+        if "prescription_medicines" in medicine_info:
+            medicine_info["prescription_medicines"] = [
+                m for m in medicine_info["prescription_medicines"] 
+                if not any(r.lower() in m.lower() for r in restricted_drugs)
+            ]
+            
         top_conditions.append({
             "name": disease_name,
             "confidence": confidence,
             "match_score": match_score,
-            "reasoning": f"Probability: {norm_prob:.2f}",
+            "reasoning": reasoning_text,
             "medicine_info": {
-                **get_medicine_info(disease_name),
-                "disclaimer": "⚠️ FOR AWARENESS ONLY — Do NOT self-medicate. Always consult a qualified doctor or pharmacist before taking any medicine."
+                **medicine_info,
+                "disclaimer": "⚠️ DO NOT SELF-MEDICATE — For awareness only. Always consult a doctor before taking any medicine."
             }
         })
         

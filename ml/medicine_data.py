@@ -121,7 +121,7 @@ MEDICINE_DATA = {
   },
   "Heart attack": {
     "otc_medicines": ["Aspirin 325mg — chew immediately if suspected"],
-    "prescription_medicines": ["Call 108 immediately", "Nitroglycerin (if prescribed)", "Clopidogrel", "Heparin IV"],
+    "prescription_medicines": ["Call 108 immediately"],
     "avoid": ["Delay", "Physical exertion", "NSAIDs"],
     "category": "EMERGENCY — call 108"
   },
