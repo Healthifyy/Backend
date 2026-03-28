@@ -1,5 +1,6 @@
 import pickle
 import numpy as np
+import json
 import os
 import sys
 
@@ -27,11 +28,13 @@ def normalize_symptom(s):
 _model = None
 _symptom_columns = None
 _disease_encoder = None
+_disease_symptoms = {}
 
 # Paths to artifacts
 MODEL_PKL = "ml/healthify_model.pkl"
 COLUMNS_PKL = "ml/symptom_columns.pkl"
 ENCODER_PKL = "ml/disease_encoder.pkl"
+DS_JSON = "ml/disease_symptoms.json"
 
 # DISEASE to TEST mapping
 DISEASE_TESTS = {
@@ -55,7 +58,7 @@ DISEASE_TESTS = {
 
 def load_model() -> bool:
     """Load all 3 pickle files into global variables."""
-    global _model, _symptom_columns, _disease_encoder
+    global _model, _symptom_columns, _disease_encoder, _disease_symptoms
     try:
         if not os.path.exists(MODEL_PKL) or not os.path.exists(COLUMNS_PKL) or not os.path.exists(ENCODER_PKL):
             print(f"Error: One or more model artifacts missing in ml/ folder.")
@@ -68,6 +71,10 @@ def load_model() -> bool:
         with open(ENCODER_PKL, "rb") as f:
             _disease_encoder = pickle.load(f)
             
+        if os.path.exists(DS_JSON):
+            with open(DS_JSON, "r") as f:
+                _disease_symptoms = json.load(f)
+                
         print(f"Model loaded: {len(_disease_encoder.classes_)} diseases, {len(_symptom_columns)} symptoms")
         return True
     except Exception as e:
@@ -97,23 +104,44 @@ def symptoms_to_vector(symptoms: list) -> np.ndarray:
 
 def classify_urgency(clean_symptoms: list, severity: int, is_pregnant: bool, recent_travel: bool) -> str:
     """Determine case urgency based on clinical rules. OVERRIDES ML"""
-    # Emergency rules
-    emergency_keywords = {"chest_pain", "breathlessness", "unconsciousness", "paralysis", "slurred_speech", "severe_bleeding"}
-    has_emergency = any(k in clean_symptoms for k in emergency_keywords)
+    has_fever = any("fever" in s for s in clean_symptoms)
+    has_high_fever = "high_fever" in clean_symptoms
+    chest_and_breath = "chest_pain" in clean_symptoms and "breathlessness" in clean_symptoms
+    emergency_keywords = {"unconsciousness", "paralysis", "slurred_speech", "severe_bleeding"}
+    has_emergency_keyword = any(k in clean_symptoms for k in emergency_keywords)
     
-    if severity >= 7 or has_emergency or ("high_fever" in clean_symptoms and "breathlessness" in clean_symptoms):
+    # Emergency rules
+    if severity >= 8 or chest_and_breath or has_emergency_keyword:
         return "EMERGENCY"
         
     # Urgent rules
-    urgent_keywords = {"high_fever", "vomiting", "dehydration", "jaundice"}
-    has_urgent = any(k in clean_symptoms for k in urgent_keywords)
-    has_any_fever = any("fever" in s for s in clean_symptoms)
+    other_than_high_fever = sum(1 for s in clean_symptoms if s != "high_fever")
+    is_preg_and_fever = is_pregnant and has_fever
+    breath_alone = "breathlessness" in clean_symptoms
+    vomit_and_diarrhoea = "vomiting" in clean_symptoms and "diarrhoea" in clean_symptoms
     
-    if severity >= 4 or has_urgent or (is_pregnant and has_any_fever) or recent_travel:
+    if severity >= 7 or (has_high_fever and other_than_high_fever >= 2) or is_preg_and_fever or breath_alone or vomit_and_diarrhoea:
         return "URGENT"
         
     # Routine rules
-    return "ROUTINE"
+    high_fever_alone = has_high_fever and len(clean_symptoms) == 1
+    vomiting_alone = "vomiting" in clean_symptoms and len(clean_symptoms) == 1
+    headache_and_fever = "headache" in clean_symptoms and has_fever
+    
+    # explicit NON_URGENT override for mild cases
+    mild_keywords = {"itching", "runny_nose", "sneezing", "mild_fever", "rash", "skin_rash"}
+    is_mild_alone = len(clean_symptoms) == 1 and any(k in clean_symptoms[0] for k in mild_keywords)
+    skin_rashes_no_fever = any("rash" in s for s in clean_symptoms) and not has_fever
+    single_mild_sym = len(clean_symptoms) == 1 and severity < 6
+    
+    if (severity <= 3) or is_mild_alone or skin_rashes_no_fever or single_mild_sym:
+        return "NON_URGENT"
+        
+    if (4 <= severity <= 6) or high_fever_alone or vomiting_alone or headache_and_fever:
+        return "ROUTINE"
+        
+    # Non-Urgent rules
+    return "NON_URGENT"
 
 def get_red_flags(clean_s: list, existing_conditions: list) -> list[str]:
     """Check for dangerous symptom/condition combinations."""
@@ -126,6 +154,9 @@ def get_red_flags(clean_s: list, existing_conditions: list) -> list[str]:
         flags.append("High fever with neck stiffness — possible meningitis")
     if "diabetes" in conds and "high_fever" in clean_s:
         flags.append("Diabetic patient with fever — elevated infection complication risk")
+        
+    if not flags:
+        flags.append("No immediate danger signs detected")
         
     return flags
 
@@ -161,6 +192,20 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     
     probs = _model.predict_proba(vector)[0]
     
+    emergency_keywords = {"unconsciousness", "paralysis", "slurred_speech", "severe_bleeding"}
+    has_emergency_sym = any(k in matched_symptoms for k in emergency_keywords) or ("chest_pain" in matched_symptoms and "breathlessness" in matched_symptoms)
+    if severity <= 5 and not has_emergency_sym:
+        rare_diseases = [
+            "paralysis", "heart attack", "chronic cholestasis", 
+            "hepatitis a", "hepatitis b", "hepatitis c", 
+            "hepatitis d", "hepatitis e", "aids", 
+            "tuberculosis", "dimorphic hemmorhoids"
+        ]
+        for i, disease in enumerate(_disease_encoder.classes_):
+            d_lower = disease.lower()
+            if any(r in d_lower for r in rare_diseases):
+                probs[i] = 0.0
+
     # PRIORITY BOOST RULES
     for i, disease in enumerate(_disease_encoder.classes_):
         boost = 0.0
@@ -197,11 +242,28 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
         probs[i] = min(probs[i] + boost, 0.99)
     
     top_indices = np.argsort(probs)[::-1][:3]
+    top_probs = probs[top_indices]
+    total_prob = np.sum(top_probs)
+    if total_prob > 0:
+        normalized_probs = top_probs / total_prob
+    else:
+        normalized_probs = np.zeros(3)
     
     top_conditions = []
-    for idx in top_indices:
+    for i, idx in enumerate(top_indices):
         disease_name = _disease_encoder.classes_[idx]
         prob = probs[idx]
+        norm_prob = normalized_probs[i]
+        
+        if _disease_symptoms and disease_name in _disease_symptoms:
+            disease_known_symptoms = _disease_symptoms[disease_name]
+            matched_for_this_disease = [s for s in matched_symptoms if s in disease_known_symptoms]
+            match_score = int((len(matched_for_this_disease) / total_input) * 100) if total_input > 0 else 0
+        else:
+            match_score = int((len(matched_symptoms) / total_input) * 100) if total_input > 0 else 0
+            
+        if match_score == 100 and len(matched_symptoms) < total_input:
+            match_score = int((len(matched_symptoms) / total_input) * 100)
         
         if prob >= 0.50: 
             confidence = "High"
@@ -217,7 +279,7 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
             "name": disease_name,
             "confidence": confidence,
             "match_score": match_score,
-            "reasoning": f"Probability: {prob:.2f}"
+            "reasoning": f"Probability: {norm_prob:.2f}"
         })
         
     # Urgency Override
@@ -227,6 +289,35 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     red_flags = get_red_flags(matched_symptoms, existing_conditions)
     top_condition_name = top_conditions[0]["name"]
     recommended_tests = DISEASE_TESTS.get(top_condition_name, ["Consult a doctor for specific tests"])
+    
+    c_lower = top_condition_name.lower()
+    if any(k in c_lower for k in ["fungal", "skin", "acne", "psoriasis", "impetigo", "rash"]):
+        home_care = [
+            "Keep affected area clean and dry",
+            "Avoid scratching to prevent infection",
+            "Wear loose, breathable clothing",
+            "Watch for spreading rash or fever"
+        ]
+    elif any(k in c_lower for k in ["fever", "malaria", "dengue", "typhoid", "pneumonia", "chicken pox"]):
+        home_care = [
+            "Take paracetamol for fever above 38.5°C",
+            "Stay hydrated with ORS or coconut water",
+            "Rest and avoid exertion"
+        ]
+    elif any(k in c_lower for k in ["cold", "allergy"]):
+        home_care = [
+            "Stay warm and drink warm fluids",
+            "Avoid known allergens",
+            "Steam inhalation for congestion"
+        ]
+    elif any(k in c_lower for k in ["gastro", "jaundice", "cholera", "peptic", "diarrhoea", "hepatitis"]):
+        home_care = [
+            "ORS every 2 hours",
+            "Avoid solid food for 4-6 hours",
+            "Watch for signs of dehydration"
+        ]
+    else:
+        home_care = ["Rest and stay hydrated"]
     
     doctor_summary = (f"Patient presents with {', '.join(symptoms)}. "
                       f"AI triage identifies {top_condition_name} as most probable. "
@@ -238,7 +329,7 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
         "top_conditions": top_conditions,
         "red_flags": red_flags,
         "recommended_tests": recommended_tests,
-        "home_care": ["Rest and stay hydrated"],
+        "home_care": home_care,
         "when_to_escalate": ["If symptoms worsen significantly", "If new symptoms appear"],
         "doctor_summary": doctor_summary,
         "source": "ml_only"
