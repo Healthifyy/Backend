@@ -120,6 +120,10 @@ def validate_symptoms(symptoms: list) -> list:
                 valid.append(col_name)
                 break
     return list(set(valid)) # Return unique matches
+
+def get_symptom_list():
+    """Return the list of columns the model was trained on."""
+    return _symptom_columns or []
                 
     return vector.reshape(1, -1)
 

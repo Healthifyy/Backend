@@ -66,8 +66,12 @@ class TriageResponse(BaseModel):
     source: str = "ml_only"  # "ml+gemini" | "ml_only"
 
 class ImageSymptomRequest(BaseModel):
-    detected_symptoms: List[str]
-    confidence: float
+    detected_symptoms: list[str] = []
+    confidence: str = "Low"
 
 class ImageSymptomResponse(BaseModel):
-    valid_symptoms: List[str]
+    valid_symptoms: list[str]
+    invalid_symptoms: list[str] = []
+    confidence: str
+    message: str
+
