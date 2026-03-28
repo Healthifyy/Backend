@@ -6,6 +6,8 @@ import sys
 
 from ml.medicine_data import get_medicine_info
 
+SYMPTOM_LIST = []
+
 SYMPTOM_ALIASES = {
     "body_ache": "muscle_pain",
     "body ache": "muscle_pain",
@@ -77,6 +79,11 @@ def load_model() -> bool:
             with open(DS_JSON, "r") as f:
                 _disease_symptoms = json.load(f)
                 
+        # Populate exported SYMPTOM_LIST for external use
+        global SYMPTOM_LIST
+        SYMPTOM_LIST.clear()
+        SYMPTOM_LIST.extend(list(_symptom_columns))
+                
         print(f"Model loaded: {len(_disease_encoder.classes_)} diseases, {len(_symptom_columns)} symptoms")
         return True
     except Exception as e:
@@ -101,6 +108,8 @@ def symptoms_to_vector(symptoms: list) -> np.ndarray:
             if clean_s in col_name or col_name in clean_s:
                 vector[col_idx] = 1
                 break
+                
+    return vector.reshape(1, -1)
 
 def validate_symptoms(symptoms: list) -> list:
     """Filter symptoms against the model's known symptom list."""
@@ -124,8 +133,6 @@ def validate_symptoms(symptoms: list) -> list:
 def get_symptom_list():
     """Return the list of columns the model was trained on."""
     return _symptom_columns or []
-                
-    return vector.reshape(1, -1)
 
 def classify_urgency(clean_symptoms: list, severity: int, is_pregnant: bool, recent_travel: bool) -> str:
     """Determine case urgency based on clinical rules. OVERRIDES ML"""
