@@ -5,6 +5,14 @@ import os
 import sys
 
 from ml.medicine_data import get_medicine_info
+from ml.knowledge_engine import (
+    calculate_confidence,
+    get_urgency,
+    filter_age_inappropriate_diseases,
+    build_reasoning,
+    get_age_group,
+    get_duration_category
+)
 
 SYMPTOM_LIST = []
 
@@ -194,7 +202,8 @@ def get_red_flags(clean_s: list, existing_conditions: list) -> list[str]:
 
 def predict_disease(symptoms: list, existing_conditions: list = [], 
                     is_pregnant: bool = False, severity: int = 5,
-                    recent_travel: bool = False, age: int = 30, gender: str = "other") -> dict:
+                    recent_travel: bool = False, age: int = 30, 
+                    duration_days: int = 1) -> dict:
     """Main entry point for AI disease prediction and triage."""
     if _model is None:
         if not load_model():
@@ -223,97 +232,47 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     match_score = int((len(matched_symptoms) / total_input) * 100) if total_input > 0 else 0
     
     probs = _model.predict_proba(vector)[0]
-    
-    emergency_keywords = {"unconsciousness", "paralysis", "slurred_speech", "severe_bleeding"}
-    has_emergency_sym = any(k in matched_symptoms for k in emergency_keywords) or ("chest_pain" in matched_symptoms and "breathlessness" in matched_symptoms)
-    if severity <= 5 and not has_emergency_sym:
-        rare_diseases = [
-            "paralysis", "heart attack", "chronic cholestasis", 
-            "hepatitis a", "hepatitis b", "hepatitis c", 
-            "hepatitis d", "hepatitis e", "aids", 
-            "tuberculosis", "dimorphic hemmorhoids"
-        ]
-        for i, disease in enumerate(_disease_encoder.classes_):
-            d_lower = disease.lower()
-            if any(r in d_lower for r in rare_diseases):
-                probs[i] = 0.0
 
-    # PRIORITY BOOST RULES
-    for i, disease in enumerate(_disease_encoder.classes_):
-        boost = 0.0
-        
-        has_chest_pain = "chest_pain" in matched_symptoms
-        has_breath = "breathlessness" in matched_symptoms
-        has_fever = "high_fever" in matched_symptoms
-        has_headache = "headache" in matched_symptoms
-        has_body_ache = "body_ache" in matched_symptoms or "muscle_pain" in matched_symptoms
-        has_runny = "runny_nose" in matched_symptoms
-        has_sneezing = "sneezing" in matched_symptoms or "continuous_sneezing" in matched_symptoms
-        has_yellow = "yellowish_skin" in matched_symptoms
-        has_dark_urine = "dark_urine" in matched_symptoms
-        has_vomiting = "vomiting" in matched_symptoms
-        has_diarrhoea = "diarrhoea" in matched_symptoms
-        has_dehydration = "dehydration" in matched_symptoms
-        
-        if has_chest_pain and has_breath:
-            if disease == "Heart attack": boost += 0.3
-        if has_fever and has_headache and has_body_ache:
-            if disease == "Malaria": boost += 0.4
-            elif disease == "Dengue": boost += 0.35
-            elif disease == "Typhoid": boost += 0.3
-        if has_runny and has_sneezing:
-            if disease in ["Common Cold", "Allergy"]: boost += 0.3
-        if has_yellow and has_dark_urine:
-            if "hepatitis" in disease.lower() or disease == "Jaundice": boost += 0.3
-        if has_vomiting and has_diarrhoea and has_dehydration:
-            if disease in ["Cholera", "Gastroenteritis"]: boost += 0.3
-            
-        if is_pregnant and has_fever:
-            if disease == "Malaria": boost += 0.2
-            
-        probs[i] = min(probs[i] + boost, 0.99)
+    # Step 1: PRE-PROCESS ML RESULTS
+    top_indices = np.argsort(probs)[::-1][:15] # Get more candidates for filtering
     
-    top_indices = np.argsort(probs)[::-1][:3]
-    top_probs = probs[top_indices]
-    total_prob = np.sum(top_probs)
-    if total_prob > 0:
-        normalized_probs = top_probs / total_prob
-    else:
-        normalized_probs = np.zeros(3)
-    
-    top_conditions = []
-    for i, idx in enumerate(top_indices):
+    raw_ml_conditions = []
+    for idx in top_indices:
         disease_name = _disease_encoder.classes_[idx]
-        prob = probs[idx]
-        norm_prob = normalized_probs[i]
+        raw_prob = float(probs[idx])
         
-        if _disease_symptoms and disease_name in _disease_symptoms:
-            disease_known_symptoms = _disease_symptoms[disease_name]
-            matched_for_this_disease = [s for s in matched_symptoms if s in disease_known_symptoms]
-            match_score = int((len(matched_for_this_disease) / total_input) * 100) if total_input > 0 else 0
-        else:
-            match_score = int((len(matched_symptoms) / total_input) * 100) if total_input > 0 else 0
-            
-        if match_score == 100 and len(matched_symptoms) < total_input:
-            match_score = int((len(matched_symptoms) / total_input) * 100)
-        
-        if prob >= 0.50: 
-            confidence = "High"
-        elif prob >= 0.25: 
-            confidence = "Medium"
-        else: 
-            if match_score >= 80:
-                confidence = "Medium"
-            else:
-                confidence = "Low"
-        
-        # Generate reasoning based on symptoms
-        reasoning_text = f"Suspected due to: {', '.join(matched_for_this_disease if _disease_symptoms and disease_name in _disease_symptoms else matched_symptoms)}"
-        
-        # Get medicine info and filter strictly
         medicine_info = get_medicine_info(disease_name).copy()
+        raw_ml_conditions.append({
+            "name": disease_name,
+            "raw_probability": raw_prob,
+            "medicine_info": medicine_info
+        })
+
+    # Step 2: FILTER AGE-INAPPROPRIATE DISEASES
+    top_conditions = filter_age_inappropriate_diseases(raw_ml_conditions, age)
+    
+    # If all filtered out, fallback to top ML prediction
+    if not top_conditions:
+        top_conditions = [raw_ml_conditions[0]]
+
+    # Step 3: ENHANCED CONFIDENCE + REASONING (Knowledge Engine)
+    enhanced_conditions = []
+    for condition in top_conditions[:3]:
+        disease_name = condition["name"]
+        ml_prob = condition["raw_probability"]
         
-        # Safety filter for specific high-risk drugs
+        conf = calculate_confidence(
+            disease_name, matched_symptoms, age, 
+            duration_days, ml_prob
+        )
+        
+        reasoning = build_reasoning(
+            disease_name, symptoms, age,
+            duration_days, conf
+        )
+        
+        # Medicine safety filter
+        medicine_info = condition["medicine_info"]
         restricted_drugs = ["Heparin IV", "Clopidogrel", "Nitroglycerin"]
         if "prescription_medicines" in medicine_info:
             medicine_info["prescription_medicines"] = [
@@ -321,51 +280,46 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
                 if not any(r.lower() in m.lower() for r in restricted_drugs)
             ]
             
-        top_conditions.append({
+        enhanced_conditions.append({
             "name": disease_name,
-            "confidence": confidence,
-            "match_score": match_score,
-            "reasoning": reasoning_text,
+            "confidence": conf["label"],
+            "conf_score": conf["score"], # Store for sorting
+            "match_score": conf["match_score"],
+            "reasoning": reasoning,
             "medicine_info": {
                 **medicine_info,
                 "disclaimer": "⚠️ DO NOT SELF-MEDICATE — For awareness only. Always consult a doctor before taking any medicine."
             }
         })
-        
-    # Urgency Override
-    urgency = classify_urgency(matched_symptoms, severity, is_pregnant, recent_travel)
-    urgency_reason = "Determined by clinical rule engine"
+
+    # Step 4: SORT BY CONFIDENCE (Raw score first, then label)
+    enhanced_conditions.sort(
+        key=lambda x: ({"High": 3, "Medium": 2, "Low": 1}.get(x["confidence"], 0), x["conf_score"]),
+        reverse=True
+    )
+
+    # Step 5: GET URGENCY (Knowledge Engine)
+    top_disease = enhanced_conditions[0]["name"] if enhanced_conditions else "Unknown"
+    urgency, urgency_reason = get_urgency(
+        top_disease, matched_symptoms, severity,
+        age, duration_days, is_pregnant
+    )
     
+    # Red flags and recommended tests
     red_flags = get_red_flags(matched_symptoms, existing_conditions)
-    top_condition_name = top_conditions[0]["name"]
+    top_condition_name = enhanced_conditions[0]["name"]
     recommended_tests = DISEASE_TESTS.get(top_condition_name, ["Consult a doctor for specific tests"])
     
+    # Home care advice
     c_lower = top_condition_name.lower()
     if any(k in c_lower for k in ["fungal", "skin", "acne", "psoriasis", "impetigo", "rash"]):
-        home_care = [
-            "Keep affected area clean and dry",
-            "Avoid scratching to prevent infection",
-            "Wear loose, breathable clothing",
-            "Watch for spreading rash or fever"
-        ]
-    elif any(k in c_lower for k in ["fever", "malaria", "dengue", "typhoid", "pneumonia", "chicken pox"]):
-        home_care = [
-            "Take paracetamol for fever above 38.5°C",
-            "Stay hydrated with ORS or coconut water",
-            "Rest and avoid exertion"
-        ]
-    elif any(k in c_lower for k in ["cold", "allergy"]):
-        home_care = [
-            "Stay warm and drink warm fluids",
-            "Avoid known allergens",
-            "Steam inhalation for congestion"
-        ]
-    elif any(k in c_lower for k in ["gastro", "jaundice", "cholera", "peptic", "diarrhoea", "hepatitis"]):
-        home_care = [
-            "ORS every 2 hours",
-            "Avoid solid food for 4-6 hours",
-            "Watch for signs of dehydration"
-        ]
+        home_care = ["Keep area clean", "Avoid scratching", "Wear loose clothing"]
+    elif any(k in c_lower for k in ["fever", "malaria", "dengue", "typhoid"]):
+        home_care = ["Paracetamol for fever", "Stay hydrated", "Rest"]
+    elif "cold" in c_lower or "allergy" in c_lower:
+        home_care = ["Stay warm", "Steam inhalation", "Avoid allergens"]
+    elif any(k in c_lower for k in ["gastro", "jaundice", "diarrhoea"]):
+        home_care = ["ORS for hydration", "Avoid solid food for few hours"]
     else:
         home_care = ["Rest and stay hydrated"]
     
@@ -376,7 +330,7 @@ def predict_disease(symptoms: list, existing_conditions: list = [],
     return {
         "urgency": urgency,
         "urgency_reason": urgency_reason,
-        "top_conditions": top_conditions,
+        "top_conditions": enhanced_conditions,
         "red_flags": red_flags,
         "recommended_tests": recommended_tests,
         "home_care": home_care,

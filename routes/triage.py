@@ -31,7 +31,9 @@ async def triage_patient(request: TriageRequest):
                 symptoms=request.symptoms,
                 existing_conditions=request.existing_conditions,
                 is_pregnant=request.is_pregnant,
-                severity=request.severity
+                severity=request.severity,
+                age=request.age,
+                duration_days=request.duration_days
             )
         except Exception as e:
             logger.error(f"ML prediction failed: {e}")
